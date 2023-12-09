@@ -51,6 +51,11 @@
 #include "DemoUtilities.h"
 #include "AudioLiveScrollingDisplay.h"
 
+
+typedef juce::AudioProcessorValueTreeState::SliderAttachment SliderAttachment;
+typedef juce::AudioProcessorValueTreeState::ButtonAttachment ButtonAttachment;
+
+
 //==============================================================================
 /** Our demo synth sound is just a basic sine wave.. */
 struct SineWaveSound final : public SynthesiserSound
@@ -107,6 +112,23 @@ private:
     LEAF *leaf;
 };
 
+class LabeledSlider : public GroupComponent
+{
+public:
+    LabeledSlider (const String& name)
+    {
+        setText (name);
+        setTextLabelPosition (Justification::centredTop);
+        addAndMakeVisible (slider);
+    }
+    
+    void resized() override
+    {
+        slider.setBounds (getLocalBounds().reduced (10));
+    }
+    
+    Slider slider { Slider::RotaryHorizontalVerticalDrag, Slider::TextBoxBelow };
+};
 //==============================================================================
 // This is an audio source that streams the output of our demo synth.
 struct SynthAudioSource final : public AudioSource
@@ -236,6 +258,12 @@ public:
         sineButton.onClick = [this] { synthAudioSource.setUsingSineWaveSound(); };
 
         addAndMakeVisible (liveAudioDisplayComp);
+        
+        addAndMakeVisible (openAmountSlider);
+        //openAttachment.reset (new SliderAttachment (valueTreeState, "open_amount", openAmountSlider.slider));
+        
+        
+        
         audioSourcePlayer.setSource (&synthAudioSource);
 
        #ifndef JUCE_DEMO_RUNNER
@@ -265,6 +293,7 @@ public:
     void resized() override
     {
         keyboardComponent   .setBounds (8, 96, getWidth() - 16, 64);
+        openAmountSlider    .setBounds (8, 256, 128, 128);
         sineButton          .setBounds (16, 176, 150, 24);
         sampledButton       .setBounds (16, 200, 150, 24);
         liveAudioDisplayComp.setBounds (8, 8, getWidth() - 16, 64);
@@ -286,10 +315,14 @@ private:
     ToggleButton sineButton     { "Use sine wave" };
     ToggleButton sampledButton  { "Use sampled sound" };
     
-
+    LabeledSlider openAmountSlider {"Really Cool Slider"};
+    
     LiveScrollingAudioDisplay liveAudioDisplayComp;
 
     Callback callback { audioSourcePlayer, liveAudioDisplayComp };
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (AudioSynthesiserDemo)
 };
+
+
+
