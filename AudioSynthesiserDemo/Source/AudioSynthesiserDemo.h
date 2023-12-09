@@ -70,7 +70,33 @@ struct SineWaveVoice final : public SynthesiserVoice
 {
     SineWaveVoice(LEAF * leaf) : leaf(leaf)
     {
-        tCycle_init(&mySine, leaf);
+        for (int i = 0; i < numModes; i++)
+        {
+            tCycle_init(&mySine[i], leaf);
+            outputWeights[i] = sin((i+1.0f) * pickupPos);
+        }
+    }
+    
+    void setInitialAmplitudes()
+    {
+        for (int i = 0; i < numModes; i++)
+        {
+            int n = i + 1;
+            double denom = ((n * n) * pluckPos) * (PI - pluckPos);
+            amplitudes[i] = 2.0 * sin(pluckPos * n) / denom;
+            if ((amplitudes[i] > 1.0f) || (isnan(amplitudes[i])))
+            {
+                DBG("HELP ME:");
+            }
+        }
+    }
+    
+    void changePickupPos()
+    {
+        for (int i = 0; i < numModes; i++)
+        {
+            outputWeights[i] = sin((i+1.0f) * pickupPos);
+        }
     }
     bool canPlaySound (SynthesiserSound* sound) override
     {
@@ -80,14 +106,37 @@ struct SineWaveVoice final : public SynthesiserVoice
     void startNote (int midiNoteNumber, float velocity,
                     SynthesiserSound*, int /*currentPitchWheelPosition*/) override
     {
-        auto cyclesPerSecond = MidiMessage::getMidiNoteInHertz (midiNoteNumber);
-        tCycle_setFreq(&mySine, cyclesPerSecond);
-        amplitude = 0.5f;
+        if (!playing)
+        {
+            auto cyclesPerSecond = MidiMessage::getMidiNoteInHertz (midiNoteNumber);
+            for (int i = 0; i < numModes; i++)
+            {
+                int myMode = i + 1;
+                float myModeSquared = myMode * myMode;
+                float sig = decay + (decayHighFreq * myModeSquared);
+                float w0 = myMode * sqrtf(1.0f + (sliderVal * sliderVal) * myModeSquared);
+                float w = w0 * sqrtf(1.0f - ((sig * sig) / (w0 * w0)));
+                tCycle_setFreq(&mySine[i], cyclesPerSecond * w);
+                setInitialAmplitudes();
+                
+            }
+            playing = 1;
+            masterAmplitude = 0.7f;
+            DBG("newnote");
+            
+        }
+
     }
 
     void stopNote (float /*velocity*/, bool allowTailOff) override
     {
-        amplitude = 0.0f;
+        
+        if (playing)
+        {
+            masterAmplitude = 0.0f;
+            playing = 0;
+            DBG("stopppped");
+        }
     }
 
     void pitchWheelMoved (int /*newValue*/) override                              {}
@@ -97,19 +146,44 @@ struct SineWaveVoice final : public SynthesiserVoice
     {
         while (--numSamples >= 0)
         {
-            auto currentSample = tCycle_tick(&mySine) * amplitude;
+            auto currentSample = 0.0f;
+            for (int j = 0; j < numModes; j++)
+            {
+                int myMode = j + 1;
+                float myModeSquared = myMode * myMode;
+                float sig = decay + (decayHighFreq * myModeSquared);
+                currentSample += tCycle_tick(&mySine[j]) * amplitudes[j] * outputWeights[j] * masterAmplitude;
+                double preExp = -sig * leaf->invSampleRate * mySine[j]->freq;
+                double multiplier = exp(preExp);
+                //double multiplier = 1.0f + preExp;
+                //multiplier = 0.999f;
+                amplitudes[j] = amplitudes[j] * multiplier;
+            }
+
             for (auto i = outputBuffer.getNumChannels(); --i >= 0;)
                 outputBuffer.addSample (i, startSample, currentSample);
             ++startSample;
         }
+        //DBG(amplitudes[0]);
     }
 
     using SynthesiserVoice::renderNextBlock;
-
+    float sliderVal = 0.0f;
+    float pluckPos = 0.2f;
+    float pickupPos = 0.3f;
 private:
-    float amplitude = 0.0f;
-    tCycle mySine;
+    float masterAmplitude = 0.0f;
+
+    const static int numModes = 50;
+    double amplitudes[numModes] = {0.0f};
+    double outputWeights[numModes] = {0.0f};
+    const float decay = 0.001f;
+    const float decayHighFreq = 0.001f;
+
+    tCycle mySine[numModes];
+    int playing = 0;
     LEAF *leaf;
+
 };
 
 class LabeledSlider : public GroupComponent
@@ -124,21 +198,21 @@ public:
     
     void resized() override
     {
-        slider.setBounds (getLocalBounds().reduced (10));
+        slider.setBounds (getLocalBounds().reduced (.5));
     }
     
     Slider slider { Slider::RotaryHorizontalVerticalDrag, Slider::TextBoxBelow };
 };
 //==============================================================================
 // This is an audio source that streams the output of our demo synth.
-struct SynthAudioSource final : public AudioSource
+struct SynthAudioSource final : public AudioSource, public juce::Slider::Listener
 {
 
     SynthAudioSource (MidiKeyboardState& keyState)  : keyboardState (keyState)
     {
         LEAF_init(&leaf, 44100, leafMemory, 32, []() {return (float)rand() / RAND_MAX; });
         // Add some voices to our synth, to play the sounds..
-        for (auto i = 0; i < 4; ++i)
+        for (auto i = 0; i < 1; ++i)
         {
             synth.addVoice (new SineWaveVoice(&leaf));   // These voices will play our custom sine-wave sounds..
         }
@@ -153,6 +227,27 @@ struct SynthAudioSource final : public AudioSource
         synth.addSound (new SineWaveSound());
     }
 
+    void sliderValueChanged(juce::Slider* slider) override
+    {
+        for (auto i = 0; i < 1; ++i)
+        {
+            SineWaveVoice * voice = (SineWaveVoice*)synth.getVoice(i);
+            
+            if (slider->getComponentID() == "stiffness")
+            {
+                voice->sliderVal = slider->getValue();
+            }
+            if (slider->getComponentID() == "pluck pos")
+            {
+                voice->pluckPos = slider->getValue();
+            }
+            if (slider->getComponentID() == "pickup pos")
+            {
+                voice->pickupPos = slider->getValue();
+                voice->changePickupPos();
+            }
+        }
+    }
 
     void prepareToPlay (int /*samplesPerBlockExpected*/, double sampleRate) override
     {
@@ -259,7 +354,20 @@ public:
 
         addAndMakeVisible (liveAudioDisplayComp);
         
-        addAndMakeVisible (openAmountSlider);
+        addAndMakeVisible (stiffness);
+        stiffness.setRange (0.0f, 2.0f);
+        stiffness.addListener(&synthAudioSource);
+        stiffness.setComponentID("stiffness");
+        
+        addAndMakeVisible (pluckPos);
+        pluckPos.setRange (0.01f, PI-0.01f);
+        pluckPos.addListener(&synthAudioSource);
+        pluckPos.setComponentID("pluck pos");
+        
+        addAndMakeVisible (pickupPos);
+        pickupPos.setRange (0.01f, PI-0.01f);
+        pickupPos.addListener(&synthAudioSource);
+        pickupPos.setComponentID("pickup pos");
         //openAttachment.reset (new SliderAttachment (valueTreeState, "open_amount", openAmountSlider.slider));
         
         
@@ -293,7 +401,9 @@ public:
     void resized() override
     {
         keyboardComponent   .setBounds (8, 96, getWidth() - 16, 64);
-        openAmountSlider    .setBounds (8, 256, 128, 128);
+        stiffness    .setBounds (8, 256, 128, 128);
+        pluckPos    .setBounds (158, 256, 128, 128);
+        pickupPos    .setBounds (308, 256, 128, 128);
         sineButton          .setBounds (16, 176, 150, 24);
         sampledButton       .setBounds (16, 200, 150, 24);
         liveAudioDisplayComp.setBounds (8, 8, getWidth() - 16, 64);
@@ -315,7 +425,9 @@ private:
     ToggleButton sineButton     { "Use sine wave" };
     ToggleButton sampledButton  { "Use sampled sound" };
     
-    LabeledSlider openAmountSlider {"Really Cool Slider"};
+    Slider stiffness {"stiffness"};
+    Slider pluckPos {"pluck pos"};
+    Slider pickupPos {"pickup pos"};
     
     LiveScrollingAudioDisplay liveAudioDisplayComp;
 
